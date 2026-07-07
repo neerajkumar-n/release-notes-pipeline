@@ -1,0 +1,261 @@
+name: Weekly PR Summary to Sanity
+
+on:
+  schedule:
+    # Every Wednesday at 4:30 AM UTC = 10:00 AM IST
+    - cron: '30 4 * * 3'
+  workflow_dispatch:
+    inputs:
+      start_date:
+        description: 'Override start date (YYYY-MM-DD). Defaults to 7 days ago.'
+        required: false
+        type: string
+      end_date:
+        description: 'Override end date (YYYY-MM-DD). Defaults to yesterday.'
+        required: false
+        type: string
+      chunk_size:
+        description: 'Entries per chunk for AI summarization (default: all at once)'
+        required: false
+        type: number
+        default: 0
+
+env:
+  GH_REPO: juspay/hyperswitch
+  CHANGELOG_URL: https://raw.githubusercontent.com/juspay/hyperswitch/main/CHANGELOG.md
+  AI_ENDPOINT: ${{ secrets.AI_MODEL_URL }}
+  AI_API_KEY: ${{ secrets.AI_MODEL_API_KEY }}
+  AI_MODEL: ${{ vars.AI_MODEL_NAME || 'gemini-3-flash-preview' }}
+  AI_SYSTEM_PROMPT: >-
+    You are a technical writer producing weekly release notes for Hyperswitch (hyperswitch.io).
+
+    CRITICAL RULES:
+    1. EVERY SINGLE entry from the input MUST appear in the output. No exceptions.
+    2. EVERY bullet point in EVERY section (including Highlights) MUST use this EXACT format:
+       - **Label** — Description sentence(s). [(#NUMBER)](https://github.com/juspay/hyperswitch/pull/NUMBER)
+       The bold "Label —" prefix is REQUIRED on every bullet, not just in Highlights.
+       If an entry has multiple PR numbers, include all of them as separate trailing links.
+    3. Group related entries under one bullet when they share a theme/connector
+    4. Test coverage entries belong in their appropriate section
+
+    STRUCTURE:
+
+    ## Highlights
+    Identify the 2-5 most important themes of the week. Each theme is ONE bullet with:
+    - A bold theme label: **Theme Name** —
+    - Followed by 1-2 sentences summarizing the impact
+
+    ## Connectors
+    Payment processor integrations, connector features, connector fixes, AND connector test coverage.
+    - One bullet per entry or related group, formatted as: **Label** — 1-2 sentence description
+    - MUST end with: [(#N)](https://github.com/juspay/hyperswitch/pull/N)
+
+    ## Customer & Access Management
+    Authentication, payment methods, vault, customer data, merchant profiles.
+    - One bullet per entry or related group, formatted as: **Label** — 1-2 sentence description
+    - MUST end with: [(#N)](https://github.com/juspay/hyperswitch/pull/N)
+
+    ## Routing & Core Improvements
+    Core engine, routing, infrastructure, performance, refactors, documentation, AND core test coverage.
+    - One bullet per entry or related group, formatted as: **Label** — 1-2 sentence description
+    - MUST end with: [(#N)](https://github.com/juspay/hyperswitch/pull/N)
+
+    STRICT REQUIREMENTS:
+    - ALL entries must be covered
+    - No PR numbers in bullet text — only in the link at the end
+    - No author names, no merge dates
+    - Active voice, present tense
+    - Do not invent changes
+    - Output ONLY Markdown
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  fetch-changelog:
+    name: Fetch & Parse Changelog
+    runs-on: ubuntu-latest
+    outputs:
+      week_label: ${{ steps.dates.outputs.week_label }}
+      start: ${{ steps.dates.outputs.start }}
+      end: ${{ steps.dates.outputs.end }}
+      has_prs: ${{ steps.parse.outputs.has_prs }}
+      pr_count: ${{ steps.parse.outputs.pr_count }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Compute date range
+        id: dates
+        run: |
+          if [ -n "${{ inputs.start_date }}" ]; then
+            START="${{ inputs.start_date }}"
+            END="${{ inputs.end_date }}"
+          else
+            mapfile -t DATES < <(bash scripts/compute-date-range.sh)
+            START="${DATES[0]}"
+            END="${DATES[1]}"
+          fi
+          echo "start=${START}" >> "$GITHUB_OUTPUT"
+          echo "end=${END}" >> "$GITHUB_OUTPUT"
+          echo "week_label=${START}_to_${END}" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch CHANGELOG.md
+        run: |
+          set -euo pipefail
+          echo "Fetching ${CHANGELOG_URL}"
+          curl -sfS "${CHANGELOG_URL}" -o changelog.md
+          wc -l changelog.md
+
+      - name: Parse entries in range
+        id: parse
+        env:
+          START: ${{ steps.dates.outputs.start }}
+          END: ${{ steps.dates.outputs.end }}
+        run: |
+          set -euo pipefail
+          python3 scripts/parse-changelog.py changelog.md entries.json "$START" "$END"
+
+          COUNT=$(jq 'length' entries.json)
+          echo "pr_count=${COUNT}" >> "$GITHUB_OUTPUT"
+
+          if [ "$COUNT" -eq 0 ]; then
+            echo "has_prs=false" >> "$GITHUB_OUTPUT"
+            echo "No changelog entries found between ${START} and ${END}."
+          else
+            echo "has_prs=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload parsed entries artifact
+        if: steps.parse.outputs.has_prs == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: entries-${{ steps.dates.outputs.week_label }}
+          path: entries.json
+          retention-days: 30
+
+  summarize:
+    name: Summarize with AI
+    needs: fetch-changelog
+    if: needs.fetch-changelog.outputs.has_prs == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download entries artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: entries-${{ needs.fetch-changelog.outputs.week_label }}
+
+      - name: Summarize with AI
+        env:
+          AI_KEY: ${{ secrets.AI_MODEL_API_KEY }}
+          AI_URL: ${{ env.AI_ENDPOINT }}
+          AI_MODEL_NAME: ${{ env.AI_MODEL }}
+          CHUNK_SIZE: ${{ inputs.chunk_size || 0 }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$AI_URL" ]; then
+            echo "::error::AI_MODEL_URL secret is not configured."
+            exit 1
+          fi
+
+          ENTRY_DATA=$(cat entries.json)
+          TOTAL=$(echo "$ENTRY_DATA" | jq 'length')
+
+          echo "Sending ${TOTAL} entr(ies) to AI model: ${AI_MODEL_NAME}"
+
+          if [ "$CHUNK_SIZE" -gt 0 ] && [ "$TOTAL" -gt "$CHUNK_SIZE" ]; then
+            echo "Using chunked summarization"
+            mkdir -p chunks
+
+            NUM_CHUNKS=$(( (TOTAL + CHUNK_SIZE - 1) / CHUNK_SIZE ))
+            for i in $(seq 0 $((NUM_CHUNKS - 1))); do
+              START_IDX=$((i * CHUNK_SIZE))
+              CHUNK_DATA=$(echo "$ENTRY_DATA" | jq ".[${START_IDX}:${START_IDX}+${CHUNK_SIZE}]")
+              CHUNK_NUM=$((i + 1))
+              echo "Processing chunk ${CHUNK_NUM}/${NUM_CHUNKS}..."
+
+              PAYLOAD=$(jq -n \
+                --arg system "You are a technical writer. Summarize these changelog entries into Features, Fixes, and Chores." \
+                --arg user "Changelog entries (chunk ${CHUNK_NUM}/${NUM_CHUNKS}):\n\n${CHUNK_DATA}" \
+                '{model: env.AI_MODEL_NAME, messages: [{role: "system", content: $system}, {role: "user", content: $user}], temperature: 0.2}')
+
+              RESPONSE=$(curl -sfS -H "Authorization: Bearer ${AI_KEY}" -H "Content-Type: application/json" -d "$PAYLOAD" "$AI_URL")
+              echo "$RESPONSE" | jq -r '.choices[0].message.content' > "chunks/chunk_${CHUNK_NUM}.md"
+            done
+
+            COMBINED=$(cat chunks/chunk_*.md | jq -R -s '.')
+            META_PAYLOAD=$(jq -n \
+              --arg system "Combine these partial weekly summaries into one cohesive release note. Group by Features, Fixes, and Chores. Remove duplicates." \
+              --arg user "Partial summaries:\n\n${COMBINED}" \
+              '{model: env.AI_MODEL_NAME, messages: [{role: "system", content: $system}, {role: "user", content: $user}], temperature: 0.2}')
+
+            META_RESPONSE=$(curl -sfS -H "Authorization: Bearer ${AI_KEY}" -H "Content-Type: application/json" -d "$META_PAYLOAD" "$AI_URL")
+            SUMMARY=$(echo "$META_RESPONSE" | jq -r '.choices[0].message.content')
+          else
+            echo "Using single-pass summarization"
+
+            PAYLOAD=$(jq -n \
+              --arg system "${{ env.AI_SYSTEM_PROMPT }}" \
+              --arg user "Weekly changelog entries (${TOTAL} total):\n\n${ENTRY_DATA}" \
+              '{model: env.AI_MODEL_NAME, messages: [{role: "system", content: $system}, {role: "user", content: $user}], temperature: 0.2}')
+
+            RESPONSE=$(curl -sfS -H "Authorization: Bearer ${AI_KEY}" -H "Content-Type: application/json" -d "$PAYLOAD" "$AI_URL")
+            SUMMARY=$(echo "$RESPONSE" | jq -r '.choices[0].message.content')
+          fi
+
+          if [ -z "$SUMMARY" ] || [ "$SUMMARY" = "null" ]; then
+            echo "::error::Empty summary from AI"
+            exit 1
+          fi
+
+          echo "$SUMMARY" > summary.md
+          echo "Summary generated ($(echo "$SUMMARY" | wc -w) words)"
+
+      - name: Upload summary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: summary-${{ needs.fetch-changelog.outputs.week_label }}
+          path: summary.md
+          retention-days: 30
+
+  publish:
+    name: Push to Sanity
+    needs: [fetch-changelog, summarize]
+    if: needs.fetch-changelog.outputs.has_prs == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download summary artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: summary-${{ needs.fetch-changelog.outputs.week_label }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Sanity client
+        run: npm install @sanity/client@^6
+
+      - name: Convert summary markdown to JSON payload
+        env:
+          WEEK_START: ${{ needs.fetch-changelog.outputs.start }}
+          WEEK_END: ${{ needs.fetch-changelog.outputs.end }}
+          PR_COUNT: ${{ needs.fetch-changelog.outputs.pr_count }}
+        run: |
+          set -euo pipefail
+          bash scripts/parse-markdown-to-json.sh summary.md
+
+      - name: Push weekly PR summary JSON to Sanity
+        env:
+          SANITY_WRITE_TOKEN: ${{ secrets.SANITY_WRITE_TOKEN }}
+          SANITY_PROJECT_ID: ${{ secrets.SANITY_PROJECT_ID }}
+          SANITY_DATASET: ${{ secrets.SANITY_DATASET }}
+        run: |
+          set -euo pipefail
+          node scripts/push-to-sanity.mjs summary.json
