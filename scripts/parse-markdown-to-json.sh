@@ -82,7 +82,8 @@ def parse_bullets(section_lines):
 
         if pr_numbers:
             entries.append({
-                "title": label,
+                "title": desc if desc else label,
+                "label": label,
                 "description": desc if desc else '',
                 "prNumbers": pr_numbers,
                 "prLinks": pr_links,
