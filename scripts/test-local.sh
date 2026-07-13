@@ -57,6 +57,7 @@ STRUCTURE:
 Identify the 2-5 most important themes of the week. Each theme is ONE bullet with:
 - A bold theme label: **Theme Name** —
 - Followed by 1-2 sentences summarizing the impact
+- DO NOT include PR links in Highlights — these are narrative summaries only
 
 ## Connectors
 Payment processor integrations, connector features, connector fixes, AND connector test coverage.

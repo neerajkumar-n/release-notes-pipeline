@@ -49,6 +49,8 @@ SECTION_KEY_MAP = {
     'Routing & Core Improvements': 'routingAndCore',
 }
 
+pr_pattern = re.compile(r'\[\(?(#(\d+))\)?\]\(https://github\.com/juspay/hyperswitch/pull/(\d+)\)')
+
 def to_camel_case(text):
     cleaned = re.sub(r"[^\w\s&]", '', text)
     words = [w for w in re.split(r'[\s&]+', cleaned) if w]
@@ -62,7 +64,6 @@ def heading_to_key(heading):
 def parse_bullets(section_lines):
     entries = []
     bullet_pattern = re.compile(r'- \*\*(.+?)\*\*[\s]*[—\-–][\s]*(.+)')
-    pr_pattern = re.compile(r'\[\(?(#(\d+))\)?\]\(https://github\.com/juspay/hyperswitch/pull/(\d+)\)')
 
     for line in section_lines:
         stripped = line.strip()
@@ -102,10 +103,15 @@ for line in lines:
     if in_highlights and stripped.startswith('- **'):
         match = re.match(r'- \*\*(.+?)\*\*[\s]*[—\-–][\s]*(.+)', stripped)
         if match:
-            highlights.append({
-                "theme": match.group(1).strip(),
-                "description": match.group(2).strip(),
-            })
+            theme = match.group(1).strip()
+            description = match.group(2).strip()
+            description = pr_pattern.sub('', description).strip()
+            description = re.sub(r'[\s]*[.]+$', '', description).strip()
+            if description:
+                highlights.append({
+                    "theme": theme,
+                    "description": description,
+                })
 
 sections = {}
 current_heading = None
