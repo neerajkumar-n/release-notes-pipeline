@@ -70,7 +70,7 @@ def parse_bullets(section_lines):
         match = bullet_pattern.match(stripped)
         if not match:
             continue
-        title = match.group(1).strip()
+        label = match.group(1).strip()
         rest = match.group(2).strip()
 
         pr_matches = pr_pattern.findall(rest)
@@ -82,7 +82,8 @@ def parse_bullets(section_lines):
 
         if pr_numbers:
             entries.append({
-                "title": desc if desc else title,
+                "title": label,
+                "description": desc if desc else '',
                 "prNumbers": pr_numbers,
                 "prLinks": pr_links,
             })

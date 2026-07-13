@@ -26,6 +26,7 @@ function toSanityDoc(p) {
       items: p[k].map((it, i) => ({
         _key: `item-${si}-${i}`, _type: 'item',
         title: it.title || '',
+        description: it.description || '',
         prNumbers: Array.isArray(it.prNumbers) ? it.prNumbers : [],
         prLinks: Array.isArray(it.prLinks) ? it.prLinks : [],
       })),
