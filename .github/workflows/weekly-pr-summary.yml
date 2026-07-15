@@ -178,8 +178,9 @@ jobs:
               CHUNK_NUM=$((i + 1))
               echo "Processing chunk ${CHUNK_NUM}/${NUM_CHUNKS}..."
 
+              printf '%s' "$AI_SYSTEM_PROMPT" > /tmp/ai_system_prompt.txt
               PAYLOAD=$(jq -n \
-                --arg system "You are a technical writer. Summarize these changelog entries into Features, Fixes, and Chores." \
+                --rawfile system /tmp/ai_system_prompt.txt \
                 --arg user "Changelog entries (chunk ${CHUNK_NUM}/${NUM_CHUNKS}):\n\n${CHUNK_DATA}" \
                 '{model: env.AI_MODEL_NAME, messages: [{role: "system", content: $system}, {role: "user", content: $user}], temperature: 0.2}')
 
@@ -188,9 +189,10 @@ jobs:
             done
 
             COMBINED=$(cat chunks/chunk_*.md | jq -R -s '.')
+            printf '%s' "$AI_SYSTEM_PROMPT" > /tmp/ai_system_prompt.txt
             META_PAYLOAD=$(jq -n \
-              --arg system "Combine these partial weekly summaries into one cohesive release note. Group by Features, Fixes, and Chores. Remove duplicates." \
-              --arg user "Partial summaries:\n\n${COMBINED}" \
+              --rawfile system /tmp/ai_system_prompt.txt \
+              --arg user "Combine these partial summaries into one cohesive release note. Preserve all required formatting rules, section structure, and ensure every entry appears exactly once.\n\nPartial summaries:\n\n${COMBINED}" \
               '{model: env.AI_MODEL_NAME, messages: [{role: "system", content: $system}, {role: "user", content: $user}], temperature: 0.2}')
 
             META_RESPONSE=$(curl -sfS -H "Authorization: Bearer ${AI_KEY}" -H "Content-Type: application/json" -d "$META_PAYLOAD" "$AI_URL")
@@ -198,8 +200,9 @@ jobs:
           else
             echo "Using single-pass summarization"
 
+            printf '%s' "$AI_SYSTEM_PROMPT" > /tmp/ai_system_prompt.txt
             PAYLOAD=$(jq -n \
-              --arg system "$AI_SYSTEM_PROMPT" \
+              --rawfile system /tmp/ai_system_prompt.txt \
               --arg user "Weekly changelog entries (${TOTAL} total):\n\n${ENTRY_DATA}" \
               '{model: env.AI_MODEL_NAME, messages: [{role: "system", content: $system}, {role: "user", content: $user}], temperature: 0.2}')
 
