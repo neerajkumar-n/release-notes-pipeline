@@ -7,11 +7,11 @@ on:
   workflow_dispatch:
     inputs:
       start_date:
-        description: 'Override start date (YYYY-MM-DD). Defaults to 7 days ago.'
+        description: 'Override start date (YYYY-MM-DD). Defaults to previous Wednesday.'
         required: false
         type: string
       end_date:
-        description: 'Override end date (YYYY-MM-DD). Defaults to yesterday.'
+        description: 'Override end date (YYYY-MM-DD). Defaults to this Wednesday.'
         required: false
         type: string
       chunk_size:
@@ -152,6 +152,7 @@ jobs:
           AI_KEY: ${{ secrets.AI_MODEL_API_KEY }}
           AI_URL: ${{ env.AI_ENDPOINT }}
           AI_MODEL_NAME: ${{ env.AI_MODEL }}
+          AI_SYSTEM_PROMPT: ${{ env.AI_SYSTEM_PROMPT }}
           CHUNK_SIZE: ${{ inputs.chunk_size || 0 }}
         run: |
           set -euo pipefail
@@ -198,7 +199,7 @@ jobs:
             echo "Using single-pass summarization"
 
             PAYLOAD=$(jq -n \
-              --arg system "${{ env.AI_SYSTEM_PROMPT }}" \
+              --arg system "$AI_SYSTEM_PROMPT" \
               --arg user "Weekly changelog entries (${TOTAL} total):\n\n${ENTRY_DATA}" \
               '{model: env.AI_MODEL_NAME, messages: [{role: "system", content: $system}, {role: "user", content: $user}], temperature: 0.2}')
 
